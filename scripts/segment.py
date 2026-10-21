@@ -51,7 +51,7 @@ def clean(text):
     text = re.sub(r"<[^>]+>|\{[^}]*\}", "", text)
     text = re.sub(r"\[[^\]]*\]|\([^)]*\)|[♪♫#]+", " ", text)
     text = re.sub(r"(^|\s)(>>+|-)\s+", " ", text)
-    text = re.sub(r"(^|\s)[A-Z][A-Z .'#0-9]{1,20}:\s", " ", text)  # speaker labels like "PHINEAS: "
+    text = re.sub(r"(^|\s)[A-Z][A-Za-z.'#0-9]{1,15}( [A-Z][A-Za-z.']{1,15})?:\s", " ", text)  # speaker labels: "PHINEAS: ", "Candace: ", "All: "
     return re.sub(r"\s+", " ", text.replace("&nbsp;", " ").replace("&amp;", "&")).strip()
 
 
@@ -112,6 +112,7 @@ def main():
     if use_subs:
         en_cues = cues(os.path.join(work, meta["enSubs"]))
         toks = [t for c in en_cues for t in c[2].split()]
+        tok_cue = [k for k, c in enumerate(en_cues) for _ in c[2].split()]
         enders = sum(1 for t in toks if re.search(r"[.?!]$", t))
         if enders * 40 < len(toks):  # subtitles without punctuation: one cue = one sentence
             spans, i = [], 0
@@ -135,6 +136,7 @@ def main():
         toks = [w[0] for w in words]
         spans = split_sentences(toks, [i for i in range(1, len(words)) if words[i][1] - words[i - 1][2] >= 0.35])
         hit = {i: i for i in range(len(toks))}
+        tok_cue = None
 
     rows = []
     for x, y in spans:
@@ -144,7 +146,8 @@ def main():
         m = [hit[i] for i in idx if i in hit]
         rows.append({"en": " ".join(toks[x:y + 1]), "n": len(idx), "m": m,
                      "lead": next((k for k, i in enumerate(idx) if i in hit), 0),
-                     "tail": next((k for k, i in enumerate(reversed(idx)) if i in hit), 0)})
+                     "tail": next((k for k, i in enumerate(reversed(idx)) if i in hit), 0),
+                     "cue": (en_cues[tok_cue[x]][0], en_cues[tok_cue[y]][1]) if tok_cue else None})
 
     total = words[-1][2] if words else 0
     for k, r in enumerate(rows):
@@ -159,6 +162,10 @@ def main():
         else:
             s = words[prev_last][2] if prev_last >= 0 else 0
             e = words[next_first][1] if next_first < len(words) else total
+        # Speech recognition often hears nothing under music or shouting. The subtitle line's own time is
+        # then a better guess than the gap between neighbours.
+        if r["cue"] and (not r["m"] or e - s > r["cue"][1] - r["cue"][0] + 3):
+            s, e = r["cue"]
         r["s"], r["e"] = round(max(0, s - PAD_START), 2), round(min(total + 1, max(e, s + 0.4) + PAD_END), 2)
 
     zh_cues = cues(os.path.join(work, meta["zhSubs"])) if meta.get("zhSubs") else []

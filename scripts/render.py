@@ -7,6 +7,7 @@
 
 Notes live in notes/*.json, each a dict  clip -> {"zh", "grammar": [..], "usage" (optional), "example", "exampleZh"}.
 uploads.tsv has one "clip<TAB>file_upload_id" line per uploaded clip (written by upload.sh).
+Upload a few clips, then add them with --chunk K, so uploads never sit unused long enough to expire.
 Options: --db <url of the 造句口說紀錄 database>  --board <pronunciation board url, "{d}" becomes the day number>
 """
 import argparse
@@ -25,6 +26,7 @@ def main():
     ap.add_argument("what")
     ap.add_argument("--db", default=DB)
     ap.add_argument("--board")
+    ap.add_argument("--chunk", type=int, help="only check and write this chunk (0 = page header, 1.. = 8 sentences each)")
     a = ap.parse_args()
     work = a.workdir
     plan = common.load(os.path.join(work, "plan.json"))
@@ -84,7 +86,8 @@ def main():
             p = line.rstrip("\n").split("\t")
             if len(p) == 2:
                 ups[p[0]] = p[1]
-    miss_n, miss_u = [r["clip"] for r in rows if bad(r)], [r["clip"] for r in rows if r["clip"] not in ups]
+    need = rows if a.chunk is None else rows[(a.chunk - 1) * PER_CHUNK:a.chunk * PER_CHUNK] if a.chunk else []
+    miss_n, miss_u = [r["clip"] for r in need if bad(r)], [r["clip"] for r in need if r["clip"] not in ups]
     if miss_n or miss_u:
         raise SystemExit("missing notes: %s\nmissing uploads: %s" % (miss_n, miss_u))
 
@@ -122,6 +125,7 @@ def main():
         n = notes[r["clip"]]
         b = ["### %02d｜%s" % (i, r["en"]), "中文：" + n["zh"], '<audio src="file-upload://%s"></audio>' % ups[r["clip"]], "**文法**"]
         b += ["- " + g for g in n["grammar"]]
+        b.append("")  # blank line ends the list; otherwise Notion folds the next lines into the last bullet
         if n.get("usage"):
             b.append("**使用說明**：" + n["usage"])
         b.append("**例句**：" + n["example"])
@@ -129,10 +133,12 @@ def main():
             b.append("中文：" + n["exampleZh"])
         return "\n".join(b + ["**我的造句**", "英文：", "中文：", "- [ ] 🔴 不熟", "---"])
 
-    blocks = [block(i, r) for i, r in enumerate(rows, 1)]
+    blocks = [block(i, r) if r in need else "" for i, r in enumerate(rows, 1)]
     chunks = [head] + ["\n".join(blocks[i:i + PER_CHUNK]) + "\n" for i in range(0, k, PER_CHUNK)]
     chunks[-1] += "## 今日心得\n- 最卡的 3 句：\n- 今天學到的一個句型：\n"
     for i, c in enumerate(chunks):
+        if a.chunk is not None and i != a.chunk:
+            continue
         open(os.path.join(out, "day%d_chunk%d.md" % (d, i)), "w", encoding="utf-8").write(c)
     print("chunks: %d | sentences: %d | title: %s｜Day %d｜%d 句" % (len(chunks), k, plan["title"], d, k))
 

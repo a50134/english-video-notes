@@ -29,7 +29,9 @@ py -3.13 scripts/fetch.py "<網址>" "<工作資料夾>" --check
 py -3.13 scripts/fetch.py "<網址>" "<工作資料夾>"
 ```
 本機檔案：`fetch.py "<影音檔>" "<工作資料夾>" --subs "<英文.srt>" [--zh-subs "<中文.srt>"]`
-產生 `audio.mp3`、`en.vtt`／`zh.vtt`（有的話）、`meta.json`。YouTube 的自動字幕沒有標點又會重複，所以不用；沒有人工字幕時，文字改用語音辨識的結果。
+產生 `audio.mp3`、`en.vtt`／`zh.vtt`（有的話）、`meta.json`。
+- YouTube 回「This video is not available」：fetch.py 會自動改用 android 等其他用戶端重試，並用 Node.js 當 JavaScript 執行環境；還是失敗就請使用者同意後更新 yt-dlp。
+- 字幕用 Python 自己下載（yt-dlp 的 curl 在這台電腦會出現憑證錯誤）。YouTube 的自動字幕沒有標點又會重複，所以不用；沒有人工字幕時，文字改用語音辨識的結果。
 
 ## 2. 斷句＋對時
 ```
@@ -41,7 +43,10 @@ py -3.13 scripts/segment.py "<工作資料夾>"
 - `skip` 改成 `true`：整句只有人名、字幕製作資訊（Captioning by…）、純音效。重複句和尖叫聲已自動標成 skip。
 - 修 `en`：字幕全大寫時改回正常大小寫（參考 `heard`）；語音辨識的文字要校對人名和專有名詞。
 - 太長的句子（歌詞、沒有標點的連續句）拆成多筆，各自填 `s`/`e`（用 `words.json` 裡每個字的時間）；太碎的可以合併。
-- `conf` 低於 0.6 的列出來，之後請使用者聽一下原音是否對得上。
+- `conf` 低於 0.6 的列出來，之後請使用者聽一下原音是否對得上（語音辨識抓不到的句子會改用字幕本身的時間）。
+- 同一行字幕裡有好幾句、時間一樣的，合併成一句，否則會剪出一樣的音檔。
+- 系列作的主題曲如果之前的集數已學過，可以整段排除。
+- 大量修改用一個 Python 檔（SKIP 清單、TEXT 改字、TIME 改時間、MERGE 合併）一次套用，方便重跑。
 
 ## 3. 分配天數＋剪音檔
 ```
@@ -68,7 +73,11 @@ py -3.13 scripts/plan.py "<工作資料夾>" --days <N>
 1. 呼叫 Notion 連接器的 `notion-create-file-upload`（`filename` = `Day1-01.mp3`），拿到 `upload_url`、授權標頭和 file upload id。
 2. `bash scripts/upload.sh "<工作資料夾>" Day1-01 "<upload_url>" "<authorization 標頭值>"`，成功會記到 `uploads.tsv`。
 
-上傳後約 1 小時內沒放進頁面就會失效，所以**一天一天做**：上傳 Day d 的音檔 → 馬上建 Day d 頁面 → 再做下一天。
+上傳後約 1 小時內沒放進頁面就會失效，而且對話可能中斷，所以**每 8 句一輪**：
+1. 一次呼叫 8 個 `notion-create-file-upload`（一次超過 10 個容易整批中斷）。
+2. 一個 bash 指令依序跑 8 次 `upload.sh`。
+3. `render.py "<工作資料夾>" <d> --chunk <k>` 只產生這 8 句（chunk 0 是頁首流程），馬上 `insert_content` 接到頁面。
+這樣中斷時最多只損失 8 個未用的上傳。`uploads.tsv` 裡的 id 若已過期（隔天繼續），先把檔案改名再重新上傳。
 
 ## 6. 建 Notion 頁面
 - 位置：預設放在「英文筆記」（`1fa144c0c788803b8c9ad02c074b84e8`）底下，先建總覽頁 `<片名>｜<N> 天跟讀計畫`（影片連結、每天句數對照表、各天頁面連結、被排除的句子清單），每天的頁面建在總覽頁底下。使用者指定別處就照做。

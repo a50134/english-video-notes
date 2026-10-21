@@ -11,6 +11,7 @@ import glob
 import os
 import shutil
 import subprocess
+import urllib.request
 
 import common
 
@@ -55,9 +56,22 @@ def main():
             meta["enSubsKind"] = "manual"
     else:
         import yt_dlp
-        base = {"quiet": True, "no_warnings": True, "noplaylist": True}
-        with yt_dlp.YoutubeDL(base) as y:
-            info = y.extract_info(a.source, download=False)
+        base = {"quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True}
+        if shutil.which("node"):  # YouTube needs a JavaScript runtime; yt-dlp only looks for deno by default
+            base["js_runtimes"] = {"node": {}}
+        info, err = None, None
+        # Some videos (e.g. Disney's) are "unavailable" to the default clients but play through the Android one.
+        for client in (None, ["android"], ["web_safari"], ["tv"]):
+            opts = dict(base, extractor_args={"youtube": {"player_client": client}}) if client else base
+            try:
+                with yt_dlp.YoutubeDL(opts) as y:
+                    info = y.extract_info(a.source, download=False)
+                base = opts
+                break
+            except yt_dlp.utils.DownloadError as e:
+                err = e
+        if info is None:
+            raise SystemExit("yt-dlp could not open the video: %s\nTry: py -3.13 -m pip install -U yt-dlp (ask the user first)" % str(err)[:300])
         manual, auto = info.get("subtitles") or {}, info.get("automatic_captions") or {}
         en, zh = pick(manual, EN), pick(manual, ZH)
         meta.update(title=info.get("title"), id=info.get("id"), duration=info.get("duration"), uploader=info.get("uploader"))
@@ -68,18 +82,22 @@ def main():
         print("zh subs :", zh or "none")
         if a.check:
             return
-        langs = [x for x in (en, zh) if x]
-        opts = dict(base, format="bestaudio/best", outtmpl=os.path.join(a.workdir, "source.%(ext)s"),
-                    writesubtitles=bool(langs), subtitleslangs=langs, subtitlesformat="vtt/srt/best",
-                    ffmpeg_location=common.ffmpeg())
+        # Subtitles are fetched with Python's own HTTPS (Windows certificate store): yt-dlp's curl backend
+        # can fail with "unable to get local issuer certificate" on this machine.
+        for key, lang, name in (("enSubs", en, "en"), ("zhSubs", zh, "zh")):
+            if not lang:
+                continue
+            tracks = manual[lang]
+            t = next((t for ext in ("vtt", "srt") for t in tracks if t.get("ext") == ext), None)
+            if not t:
+                continue
+            dst = name + "." + t["ext"]
+            with urllib.request.urlopen(t["url"], timeout=60) as r, open(os.path.join(a.workdir, dst), "wb") as f:
+                f.write(r.read())
+            meta[key] = dst
+        opts = dict(base, format="bestaudio/best", outtmpl=os.path.join(a.workdir, "source.%(ext)s"), ffmpeg_location=common.ffmpeg())
         with yt_dlp.YoutubeDL(opts) as y:
             y.download([a.source])
-        for key, lang, name in (("enSubs", en, "en"), ("zhSubs", zh, "zh")):
-            hit = glob.glob(os.path.join(glob.escape(a.workdir), "source.%s.*" % lang)) if lang else []
-            if hit:
-                dst = name + os.path.splitext(hit[0])[1]
-                os.replace(hit[0], os.path.join(a.workdir, dst))
-                meta[key] = dst
         media = [p for p in glob.glob(os.path.join(glob.escape(a.workdir), "source.*"))]
         to_mp3(media[0], os.path.join(a.workdir, "audio.mp3"))
         os.remove(media[0])
